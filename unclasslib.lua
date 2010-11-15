@@ -1,4 +1,20 @@
--- unclasslib.lua 2.03
+-- unclasslib.lua 2.04.04
+--
+-- Changes from 2.03:
+--
+-- 1.	Included patches and ideas from Peter Schaefer
+-- 		(peter.schaefer@gmail.com) considerably improving the efficiency of
+-- 		build(), __init() and other parts of the code.
+--
+-- 2.	The former remove_ambiguous() function was removed, improving the
+-- 		efficiency of both build() (instance creation) and mt:__call() (class
+-- 		creation). Ambiguities are now processed using the ambiguous_keys
+-- 		tables introduced by Peter.
+--
+-- 3.	Removed inheritance of class properties, which was inconsistent with
+-- 		the way instance properties are handled (see pages 4-5 of the manual).
+-- 		Mostly harmless, but confusing. Now only methods are inherited.
+--
 
 -- PRIVATE
 
@@ -9,17 +25,19 @@
 	is made to behave in a way useful for debugging.
 ]]
 
-local ambiguous = { __type = 'ambiguous' }
-local remove_ambiguous
+local ambiguous
 
 if keep_ambiguous then
 
-	-- Make ambiguous complain about everything except tostring()
+	ambiguous = { _type = 'ambiguous' }
+
 	local function invalid(operation)
-		return function() 
+		return function()
 			error('Invalid ' .. operation .. ' on ambiguous')
 		end
 	end
+
+	-- Make ambiguous complain about everything except tostring()
 	local ambiguous_mt =
 	{
 		__add		= invalid('addition'),
@@ -41,18 +59,6 @@ if keep_ambiguous then
 		__tonumber	= invalid('conversion to number')
 	}
 	setmetatable(ambiguous, ambiguous_mt)
-
-	-- Don't remove ambiguous values from classes and objects
-	remove_ambiguous = function() end
-
-else
-
-	-- Remove ambiguous values from classes and objects
-	remove_ambiguous = function(t)
-		for k, v in pairs(t) do
-			if v == ambiguous then t[k] = nil end
-		end
-	end
 
 end
 
@@ -109,7 +115,7 @@ class_mt.__index = class_mt
 
 function class_mt:__newindex(name, value)
 
-	-- Rename special user-set attributes	
+	-- Rename special user-set attributes
 	if rename[name] then name = rename[name] end
 
 	-- __user_get() needs an __index() handler
@@ -125,7 +131,7 @@ function class_mt:__newindex(name, value)
 		self.__newindex = value and function(obj, k, v)
 			if reserved[k] or not value(obj, k, v) then rawset(obj, k, v) end
 		end or nil
-	
+
 	end
 
 	-- Assign the attribute
@@ -135,58 +141,71 @@ end
 --[[
 	This function creates an object of a certain class and calls itself
 	recursively to create one child object for each base class. Base objects
-	are accessed by using the base class as an index into the object.
+ 	are accessed by using the base class as an index into the object.
 	Classes derived in shared mode will create only a single base object.
-	Unambiguous grandchildren are inherited by the parent if they do not 
+	Unambiguous grandchildren are inherited by the parent if they do not
 	collide with direct children.
 ]]
 
 local function build(class, shared_objs, shared)
 
-	-- Repository for storing shared objects
-	shared_objs = shared_objs or {}
+	-- If shared, look in the repository of shared objects
+	-- and return any previous instance of this class.
+	if shared then
+		local prev_instance = shared_objs[class]
+		if prev_instance then return prev_instance end
+	end
 
-	-- Shared inheritance creates a single shared child per base class
-	if shared and shared_objs[class] then return shared_objs[class] end
-
-	-- New object
+	-- Create new object
 	local obj = { __type = 'object' }
-	
-	-- Repository for storing inherited base objects
-	local inherited = {}
-	
-	-- Build child objects for each base class
-	for i, base in ipairs(class.__bases) do
-		local child = build(base, shared_objs, class.__shared[base])
-		obj[base] = child
 
-		-- Get inherited grandchildren from this child
-		for c, grandchild in pairs(child) do
+	-- Build child objects if there are base classes
+	local nbases = #class.__bases
+	if nbases > 0 then
 
-			-- We can only accept one inherited grandchild of each class,
-			-- otherwise this is an ambiguous reference
-			if not inherited[c] then inherited[c] = grandchild
-			elseif inherited[c] ~= grandchild then inherited[c] = ambiguous
+		-- Repository for storing inherited base objects
+		local inherited = {}
+
+		-- List of ambiguous keys
+		local ambiguous_keys = {}
+
+		-- Build child objects for each base class
+		for i = 1, nbases do
+			local base = class.__bases[i]
+			local child = build(base, shared_objs, class.__shared[base])
+			obj[base] = child
+
+			-- Get inherited grandchildren from this child
+			for c, grandchild in pairs(child) do
+
+				-- We can only accept one inherited grandchild of each class,
+				-- otherwise this is an ambiguous reference
+				if not ambiguous_keys[c] then
+					if not inherited[c] then inherited[c] = grandchild
+					elseif inherited[c] ~= grandchild then
+						inherited[c] = ambiguous
+						table.insert(ambiguous_keys, c)
+					end
+				end
 			end
 		end
-	end
-	
-	-- Accept inherited grandchildren if they don't collide with
-	-- direct children
-	for k, v in pairs(inherited) do
-		if not obj[k] then obj[k] = v end
-	end
 
-	-- Remove ambiguous inherited grandchildren
-	remove_ambiguous(obj)
+		-- Accept inherited grandchildren if they don't collide with
+		-- direct children
+		for k, v in pairs(inherited) do
+			if not obj[k] then obj[k] = v end
+		end
+
+	end
 
 	-- Object is ready
 	setmetatable(obj, class)
-	
+
 	-- If shared, add it to the repository of shared objects
 	if shared then shared_objs[class] = obj end
 
 	return obj
+
 end
 
 --[[
@@ -194,7 +213,7 @@ end
 ]]
 
 function class_mt:__call(...)
-	local obj = build(self)
+	local obj = build(self, {}, false)
 	obj:__init(...)
 	return obj
 end
@@ -226,7 +245,7 @@ function class_mt:implements(class)
 end
 
 --[[
-	The is_a() method checks the type of an object or class starting from 
+	The is_a() method checks the type of an object or class starting from
 	its class and following the derivation chain upwards looking for
 	the target class. If the target class is found, it checks that its
 	interface is supported (this may fail in multiple inheritance because
@@ -241,7 +260,8 @@ function class_mt:is_a(class)
 	-- Auxiliary function to determine if a target class is one of a list of
 	-- classes or one of their bases
 	local function find(target, classlist)
-		for i, class in ipairs(classlist) do
+		for i = 1, #classlist do
+			local class = classlist[i]
 			if class == target or find(target, class.__bases) then
 				return true
 			end
@@ -265,7 +285,8 @@ end
 function class_mt:__init(...)
 	if self.__initialized then return end
 	if self.__user_init then self:__user_init(...) end
-	for i, base in ipairs(self.__bases) do
+	for i = 1, #self.__bases do
+		local base = self.__bases[i]
 		self[base]:__init(...)
 	end
 	self.__initialized = true
@@ -280,7 +301,7 @@ end
 
 function typeof(value)
 	local t = type(value)
-	return t =='table' and value.__type or t 
+	return t =='table' and value.__type or t
 end
 
 function classof(value)
@@ -297,8 +318,8 @@ function is_a(value, class)
 end
 
 --[[
-	Create a class by calling class(...). 
-	Arguments are the classes or shared classes to be derived from.
+ 	Create a class by calling class(...).
+ 	Arguments are the classes or shared classes to be derived from.
 ]]
 
 function class(...)
@@ -319,38 +340,42 @@ function class(...)
 	local inherited = {}
 	local from = {}
 
+	-- List of ambiguous keys
+	local ambiguous_keys = {}
+
 	-- Inherit from the base classes
-	for i, base in ipairs(arg) do
+	for i = 1, #arg do
+		local base = arg[i]
 
 		-- Get the base and whether it is inherited in shared mode
 		local basetype = typeof(base)
 		local shared = basetype == 'share'
-		assert(basetype == 'class' or shared, 
+		assert(basetype == 'class' or shared,
 				'Base ' .. i .. ' is not a class or shared class')
 		if shared then base = base.__class end
 
 		-- Just in case, check this base is not repeated
 		assert(c.__shared[base] == nil, 'Base ' .. i .. ' is duplicated')
-	
+
 		-- Accept it
 		c.__bases[i] = base
 		c.__shared[base] = shared
-		
-		-- Get attributes that could be inherited from this base
+
+		-- Get methods that could be inherited from this base
 		for k, v in pairs(base) do
 
-			-- Skip reserved and ambiguous attributes
-			if not reserved[k] and v ~= ambiguous and
-											inherited[k] ~= ambiguous then
+			-- Skip reserved and ambiguous methods
+			if type(v) == 'function' and not reserved[k] and
+				not ambiguous_keys[k] then
 
-				-- Where does this attribute come from?
+				-- Where does this method come from?
 				local new_from
 
-				-- Check if the attribute was inherited by the base
+				-- Check if the method was inherited by the base
 				local base_inherited = base.__inherited[k]
 				if base_inherited then
 
-					-- If it has been redefined, cancel this inheritance 
+					-- If it has been redefined, cancel this inheritance
 					if base_inherited ~= v then		-- (1)
 						base.__inherited[k] = nil
 						base.__from[k] = nil
@@ -368,34 +393,27 @@ function class(...)
 				local current_from = from[k]
 				if not current_from then
 					from[k] = new_from
+					local origin = new_from.class
 
-					-- Wrap methods so that they are called with the correct
-					-- base object self. For functions that are not methods
-					-- this creates some useless code.
-					if type(v) == 'function' then
-						local origin = new_from.class
-						inherited[k] = function(self, ...)
-							return origin[k](self[origin], ...)
-						end
-
-					-- Properties are copied
-					else
-						inherited[k] = v
+					-- We assume this is an instance method (called with
+					-- self as first argument) and wrap it so that it will
+					-- receive the correct base object as self. For class
+					-- functions this code is unusable.
+					inherited[k] = function(self, ...)
+						return origin[k](self[origin], ...)
 					end
 
-				-- Attributes inherited more than once are ambiguous unless
+				-- Methods inherited more than once are ambiguous unless
 				-- they originate in the same shared class.
 				elseif current_from.class ~= new_from.class or
 						not current_from.shared or not new_from.shared then
 					inherited[k] = ambiguous
+					table.insert(ambiguous_keys, k)
 					from[k] = nil
 				end
 			end
 		end
 	end
-
-	-- Remove ambiguous inherited attributes
-	remove_ambiguous(inherited)
 
 	-- Set the metatable now, it monitors attribute setting and does some
 	-- special processing for some of them.
