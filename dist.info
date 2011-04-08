@@ -1,0 +1,13 @@
+--- This file is part of LuaDist project
+
+name = "classlib"
+version = "2.04"
+
+desc = "A multiple-inheritance class library for Lua."
+author = "Hugo Etchegoyen"
+maintainer = "Peter Kapec"
+url = "http://luaforge.net/projects/luamiclasses/"
+
+depends = {
+	"lua ~> 5.1"
+}
