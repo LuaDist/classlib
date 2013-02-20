@@ -1,0 +1,40 @@
+type = "x86"
+arch = "Windows"
+author = "Hugo Etchegoyen"
+depends = {
+[[lua ~> 5.1]],
+}
+
+desc = "A multiple-inheritance class library for Lua."
+version = "2.04"
+maintainer = "Peter Kapec"
+files = {
+Runtime = {
+[[lib\lua\classlib.lua]],
+[[lib\lua\unclasslib.lua]],
+}
+,
+Documentation = {
+[[share\classlib\doc\README]],
+[[share\classlib\doc\classlib.doc]],
+[[share\classlib\doc\classlib-summary.doc]],
+[[share\classlib\doc\unclasslib-summary.doc]],
+}
+,
+Test = {
+[[share\classlib\test\test.lua]],
+}
+,
+Example = {
+[[share\classlib\example\account.lua]],
+[[share\classlib\example\multiple.lua]],
+[[share\classlib\example\nmultiple.lua]],
+[[share\classlib\example\nsingle.lua]],
+[[share\classlib\example\single.lua]],
+}
+,
+}
+
+url = "http://luaforge.net/projects/luamiclasses/"
+name = "classlib"
+license = "N/A"
